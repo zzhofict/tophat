@@ -20,6 +20,7 @@
 
 
 using std::string;
+using std::pair;
 
 
 
@@ -272,6 +273,8 @@ struct GetReadProc {
 class ReadStream {
 	FLineReader* flquals;
 	FLineReader* flseqs;
+    pair<long, long> stream_quals_range;
+    pair<long, long> stream_seqs_range;
 	bool stream_copy;
 	ReadFormat read_format; //should be guessed when opening the stream
 	bam1_t* b;
@@ -296,17 +299,17 @@ class ReadStream {
     bool next_read(QReadData& rdata); //get top read from the queue
 
   public:
-    ReadStream(int bufsize=READSTREAM_BUF_SIZE):flquals(NULL), flseqs(NULL), stream_copy(false), read_format(FASTX_AUTO), b(NULL),
+    ReadStream(int bufsize=READSTREAM_BUF_SIZE):flquals(NULL), flseqs(NULL), stream_quals_range(-1,-1), stream_seqs_range(-1,-1), stream_copy(false), read_format(FASTX_AUTO), b(NULL),
        bam_alt_name(false), bam_ignoreQC(false), fstream(), fquals(NULL),ReadBufSize(bufsize), read_pq(),
        last_id(0), r_eof(false) {   }
 
     ReadStream(const string& fname, FZPipe* pquals=NULL, bool guess_packer=false):flquals(NULL),
-    	flseqs(NULL), stream_copy(false), read_format(FASTX_AUTO), b(NULL), bam_alt_name(false), bam_ignoreQC(false), fstream(),
+    	flseqs(NULL), stream_quals_range(-1,-1), stream_seqs_range(-1,-1), stream_copy(false), read_format(FASTX_AUTO), b(NULL), bam_alt_name(false), bam_ignoreQC(false), fstream(),
     	fquals(pquals), ReadBufSize(READSTREAM_BUF_SIZE), read_pq(), last_id(0), r_eof(false) {
       init(fname, pquals, guess_packer);
     }
     ReadStream(FZPipe& f_stream, FZPipe* pquals=NULL):flquals(NULL),
-    	 flseqs(NULL), stream_copy(true), read_format(FASTX_AUTO), b(NULL), bam_alt_name(false), bam_ignoreQC(false), fstream(f_stream),
+    	 flseqs(NULL), stream_quals_range(-1,-1), stream_seqs_range(-1,-1), stream_copy(true), read_format(FASTX_AUTO), b(NULL), bam_alt_name(false), bam_ignoreQC(false), fstream(f_stream),
     	 fquals(pquals), ReadBufSize(READSTREAM_BUF_SIZE), read_pq(), last_id(0), r_eof(false) {
       //init(f_stream, pquals);
       if (fstream.is_bam) {
@@ -325,6 +328,17 @@ class ReadStream {
         skip_lines(*flquals);
         }
     }
+
+    void set_stream_seqs_range(pair<long,long> ssr) {
+        stream_seqs_range = ssr;
+        if(ssr.first >= 0) if(fstream.file) fstream.seek(ssr.first);
+    }
+
+    void set_stream_quals_range(pair<long,long> sqr) {
+        stream_quals_range = sqr;
+        if(sqr.first >= 0) if(fquals) fquals->seek(sqr.first);
+    }
+
     void use_alt_name(bool v=true) {
       bam_alt_name=v;
     }
@@ -463,4 +477,5 @@ class ReadStream {
       if (flseqs) delete flseqs;
     }
 };
+
 #endif

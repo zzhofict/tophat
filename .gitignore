@@ -41,3 +41,5 @@ src/tophat
 src/tophat2
 src/tophat_reports
 stamp-h1
+src/src.exvim
+src/.exvim.src

@@ -545,6 +545,9 @@ bool ReadStream::next_read(QReadData& rdata) {
 
 bool ReadStream::get_direct(Read& r) {
   if (fstream.file==NULL) return false;
+  if (stream_seqs_range.second != -1 && !fstream.is_bam && 
+        ftell(fstream.file) >= stream_seqs_range.second)
+      return false;
   if (fstream.is_bam) {
 	 bool got_read=false;
 	 while (!got_read) {

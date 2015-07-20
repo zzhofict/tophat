@@ -623,6 +623,7 @@ bin_PROGRAMS = \
 	map2gtf \
 	tophat_reports \
 	sam_juncs
+#	file_op
 
 #	$(SAMPROG) 
 bin_SCRIPTS = \
@@ -688,7 +689,8 @@ noinst_HEADERS = \
 	qual.h \
 	bam_merge.h \
 	utils.h \
-	coverage.h
+	coverage.h \
+	file_op.h
 
 libtophat_a_SOURCES = \
 	reads.cpp \
@@ -706,7 +708,8 @@ libtophat_a_SOURCES = \
 	qual.cpp \
 	bam_merge_impl.cpp \
 	utils.cpp \
-	coverage.cpp
+	coverage.cpp \
+	file_op.cpp
 
 libgc_a_SOURCES = \
 	GBase.cpp \
@@ -717,6 +720,10 @@ libgc_a_SOURCES = \
 	gff.cpp
 
 #-- program sources
+
+#file_op_SOURCES = file_op.cpp
+#file_op_LDADD = $(top_builddir)/src/libtophat.a $(BAM_LIB)
+#file_op_LDFLAGS = $(BAM_LDFLAGS) $(LDFLAGS) 
 
 prep_reads_SOURCES = prep_reads.cpp
 prep_reads_LDADD = $(top_builddir)/src/libtophat.a $(BAM_LIB)
