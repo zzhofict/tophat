@@ -51,6 +51,13 @@ using namespace std;
 // daehwan
 bool bDebug = false;
 
+string replace_thread_num(string strname, int thread_num) {
+    string repstr = "_";
+    str_appendInt(repstr, thread_num);
+    repstr.push_back('_');
+    return str_replace(strname, "_0_", repstr);
+}
+
 void print_usage()
 {
     fprintf(stderr, "Usage:   long_spanning_reads <reads.fa/.fq> <possible_juncs1,...,possible_juncsN> <possible_insertions1,...,possible_insertionsN> <possible_deletions1,...,possible_deletionsN> <seg1.bwtout,...,segN.bwtout> [spliced_seg1.bwtout,...,spliced_segN.bwtout]\n");
@@ -2982,7 +2989,7 @@ void driver(const string& bam_output_fname,
 
   vector<uint64_t> read_ids;
   vector<vector<int64_t> > offsets;
-  if (num_threads > 1)
+/*  if (num_threads > 1)
     {
       vector<string> fnames;
       fnames.push_back(reads_fname);
@@ -2992,7 +2999,7 @@ void driver(const string& bam_output_fname,
       if (!enough_data)
 	num_threads = 1;
     }
-
+*/
   std::set<Fusion> possible_fusions;
   if (fusion_search)
     {
@@ -3042,10 +3049,11 @@ void driver(const string& bam_output_fname,
   vector<HitFactory*> factories;
   ReadTable it;
 
-  samfile_t* common_spliced_bam_file = NULL;
+  vector<samfile_t*> common_spliced_bam_file(num_threads, NULL);
   if (spliced_segmap_fnames.size() > 0)
     {
-      common_spliced_bam_file = samopen(spliced_segmap_fnames[0].c_str(), "rb", 0);
+      for(int i=0; i<num_threads; i++)
+        common_spliced_bam_file[i] = samopen((replace_thread_num(spliced_segmap_fnames[0], i)).c_str(), "rb", 0);
     }
 
   vector<JoinSegmentsWorker> workers(num_threads);
@@ -3053,30 +3061,30 @@ void driver(const string& bam_output_fname,
     {
       JoinSegmentsWorker& worker = workers[i];
 
-      if (num_threads == 1)
-	worker.bam_output_fname = bam_output_fname;
-      else
+//      if (num_threads == 1)
+	worker.bam_output_fname = replace_thread_num(bam_output_fname, i);
+/*      else
 	{
 	  string filename_base = bam_output_fname.substr(0, bam_output_fname.length() - 4);
 	  char filename[1024] = {0};
 	  sprintf(filename, "%s%d.bam", filename_base.c_str(), i);
 	  worker.bam_output_fname = filename;
 	}
-      
+*/    
       worker.sam_header_fname = sam_header;
-      worker.reads_fname = reads_fname;
+      worker.reads_fname = replace_thread_num(reads_fname, i);
       worker.possible_juncs = &possible_juncs;
       worker.possible_insertions = &possible_insertions;
       worker.possible_fusions = &possible_fusions;
       worker.rt = &rt;
-      if (i == 0)
+  //    if (i == 0)
 	{
 	  worker.begin_id = 0;
 	  worker.seg_offsets = vector<int64_t>(segmap_fnames.size(), 0);
 	  worker.spliced_seg_offsets = vector<int64_t>(spliced_segmap_fnames.size(), 0);
 	  worker.read_offset = 0;
 	}
-      else
+/*      else
 	{
 	  worker.begin_id = read_ids[i-1];
 	  worker.seg_offsets.insert(worker.seg_offsets.end(),
@@ -3087,8 +3095,9 @@ void driver(const string& bam_output_fname,
 					    offsets[i-1].rend() - 1);
 	  worker.read_offset = offsets[i-1][0];
 	}
-      
-      worker.end_id = (i+1 < num_threads) ? read_ids[i] : std::numeric_limits<uint64_t>::max();
+  */    
+      worker.end_id =  std::numeric_limits<uint64_t>::max();
+      //worker.end_id = (i+1 < num_threads) ? read_ids[i] : std::numeric_limits<uint64_t>::max();
 
       // create HitFactory and HitStream one by one, which is necessary due to a huge SAM header from spliced segment mapping,
       // which happens with fusion option enabled.
@@ -3099,7 +3108,7 @@ void driver(const string& bam_output_fname,
 	{
 	  HitFactory* fac = new BAMHitFactory(it, rt);
 	  factories.push_back(fac);
-	  HitStream hs(segmap_fnames[j], fac, false, false, false, need_seq, need_qual);
+	  HitStream hs(replace_thread_num(segmap_fnames[j], i), fac, false, false, false, need_seq, need_qual);
 	  
 	  if (worker.seg_offsets[j] > 0)
 	    hs.seek(worker.seg_offsets[j]);
@@ -3110,10 +3119,10 @@ void driver(const string& bam_output_fname,
       for (size_t j = 0; j < spliced_segmap_fnames.size(); ++j)
 	{
 	  int anchor_length = 0;
-	  HitFactory* fac = new SplicedBAMHitFactory(it, rt, common_spliced_bam_file->header, anchor_length);
+	  HitFactory* fac = new SplicedBAMHitFactory(it, rt, common_spliced_bam_file[i]->header, anchor_length);
 	  factories.push_back(fac);
 	  
-	  HitStream hs(spliced_segmap_fnames[j], fac, true, false, false, need_seq, need_qual);
+	  HitStream hs(replace_thread_num(spliced_segmap_fnames[j], i), fac, true, false, false, need_seq, need_qual);
 	  
 	  if (worker.spliced_seg_offsets[j] > 0)
 	    hs.seek(worker.spliced_seg_offsets[j]);
@@ -3144,7 +3153,8 @@ void driver(const string& bam_output_fname,
       delete factories[fac];
     }
   factories.clear();
-  samclose(common_spliced_bam_file);
+  for(int i=0; i<num_threads; i++)
+    samclose(common_spliced_bam_file[i]);
   
 } //driver
 

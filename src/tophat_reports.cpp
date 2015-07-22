@@ -59,6 +59,13 @@ static const DeletionSet empty_deletions;
 static const FusionSet empty_fusions;
 static const Coverage empty_coverage;
 
+string replace_thread_num(string strname, int thread_num) {
+    string repstr = "_";
+    str_appendInt(repstr, thread_num);
+    repstr.push_back('_');
+    return str_replace(strname, "_0_", repstr);
+}
+
 // daehwan - this is redundancy, which should be removed.
 void get_seqs(istream& ref_stream,
 	      RefSequenceTable& rt,
@@ -2712,7 +2719,7 @@ void driver(const string& bam_output_fname,
 
 	vector<uint64_t> read_ids;
 	vector<vector<int64_t> > offsets;
-	if (num_threads > 1)
+/*	if (num_threads > 1)
 	{
 		vector<string> fnames;
 		if (right_map_fnames.size() > 0)
@@ -2731,7 +2738,7 @@ void driver(const string& bam_output_fname,
 			num_threads = 1;
 			}
 	}
-
+*/
 	vector<JunctionSet> vjunctions(num_threads);
 	vector<InsertionSet> vinsertions(num_threads);
 	vector<DeletionSet> vdeletions(num_threads);
@@ -2739,12 +2746,20 @@ void driver(const string& bam_output_fname,
 	vector<Coverage> vcoverages(num_threads);
 
 	vector<boost::thread*> threads;
+
+	vector<vector<string> > left_map_fnames_cp(num_threads, left_map_fnames);
+	vector<vector<string> > right_map_fnames_cp(num_threads, right_map_fnames);
 	for (int i = 0; i < num_threads; ++i)
 	{
 		ConsensusEventsWorker worker;
 
-		worker.left_map_fnames = left_map_fnames;
-		worker.right_map_fnames = right_map_fnames;
+        for(size_t si=0; si < left_map_fnames.size(); si++)
+            left_map_fnames_cp[i][si] = replace_thread_num(left_map_fnames[si], i);
+        for(size_t si=0; si < right_map_fnames.size(); si++)
+            right_map_fnames_cp[i][si] = replace_thread_num(right_map_fnames[si], i);
+		worker.left_map_fnames = left_map_fnames_cp[i];
+		worker.right_map_fnames = right_map_fnames_cp[i];
+
 		worker.rt = &rt;
 		worker.gtf_junctions = &gtf_junctions;
 
@@ -2756,12 +2771,12 @@ void driver(const string& bam_output_fname,
 
 		worker.right_map_offset = 0;
 
-		if (i == 0)
+//		if (i == 0)
 		{
 			worker.begin_id = 0;
 			worker.left_map_offset = 0;
 		}
-		else
+/*		else
 		{
 			size_t offsets_size = offsets[i-1].size();
 
@@ -2770,8 +2785,8 @@ void driver(const string& bam_output_fname,
 			if (offsets_size == 4)
 				worker.right_map_offset = offsets[i-1][1];
 		}
-
-		worker.end_id = (i+1 < num_threads) ? read_ids[i] : std::numeric_limits<uint64_t>::max();
+*/
+		worker.end_id = std::numeric_limits<uint64_t>::max();
 
 		if (num_threads > 1 && i + 1 < num_threads)
 			threads.push_back(new boost::thread(worker));
@@ -2889,10 +2904,10 @@ for (; deletion_iter != deletions.end(); ++deletion_iter)
 			worker.right_um_fname += filename;
 		}
 
-		worker.left_reads_fname = left_reads_fname;
-		worker.left_map_fnames = left_map_fnames;
-		worker.right_reads_fname = right_reads_fname;
-		worker.right_map_fnames = right_map_fnames;
+		worker.left_reads_fname = replace_thread_num(left_reads_fname, i);
+		worker.left_map_fnames = left_map_fnames_cp[i];
+		worker.right_reads_fname = replace_thread_num(right_reads_fname, i);
+		worker.right_map_fnames = right_map_fnames_cp[i];
 
 		worker.gtf_junctions = &gtf_junctions;
 		worker.junctions = &junctions;
@@ -2919,7 +2934,7 @@ for (; deletion_iter != deletions.end(); ++deletion_iter)
 			worker.left_map_offset = 0;
 		}
 		else */
-		if (i != 0)
+/*		if (i != 0)
 		{
 			size_t offsets_size = offsets[i-1].size();
 
@@ -2932,8 +2947,8 @@ for (; deletion_iter != deletions.end(); ++deletion_iter)
 				worker.right_map_offset = offsets[i-1][1];
 			}
 		}
-
-		worker.end_id = (i+1 < num_threads) ? read_ids[i] : std::numeric_limits<uint64_t>::max();
+*/
+		worker.end_id = std::numeric_limits<uint64_t>::max();
 
 		if (num_threads > 1 && i + 1 < num_threads)
 			threads.push_back(new boost::thread(worker));

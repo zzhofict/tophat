@@ -597,6 +597,8 @@ void process_reads(vector<string>& reads_fnames, vector<FZPipe>& quals_files,
         getFileQueryPos(mate_fnames[i], mate_pos[i], num_threads);
     }
 
+    cout << "after get pos" << endl;
+
     for(int i=0; i<num_threads; i++) {
 
         string tstr = "_"; str_appendInt(tstr, i);

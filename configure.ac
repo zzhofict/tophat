@@ -80,7 +80,8 @@ AC_CANONICAL_HOST
 # set CFLAGS and CXXFLAGS
 #user_CFLAGS="${CXXFLAGS}"
 user_CFLAGS=${CFLAGS}
-generic_CFLAGS="-Wall -Wno-strict-aliasing -g -gdwarf-2 -Wuninitialized"
+#generic_CFLAGS="-Wall -Wno-strict-aliasing -g -gdwarf-2 -Wuninitialized"
+generic_CFLAGS="-Wall -Wno-strict-aliasing -gdwarf-2 -Wuninitialized"
 ext_CFLAGS=""
 debug_CFLAGS=""
 user_LDFLAGS="$LDFLAGS"

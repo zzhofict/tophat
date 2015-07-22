@@ -26,6 +26,7 @@ import glob
 import signal
 from datetime import datetime, date, time
 from shutil import copy, rmtree, move
+import copy as cp
 import logging
 
 use_message = '''
@@ -2122,9 +2123,6 @@ def bowtie(params,
            extra_output = "",
            mapping_type = _reads_vs_G,
            multihits_out = None): #only --prefilter-multihits should activate this parameter for the initial prefilter search
-    old_num_threads = params.system_params.num_threads
-    if params.system_params.num_threads > 1:
-        params.system_params.num_threads /= 2
     start_time = datetime.now()
     bwt_idx_name = bwt_idx_prefix.split('/')[-1]
     reads_file=reads_list[0]
@@ -2356,110 +2354,100 @@ def bowtie(params,
 
         bowtie_cmd += [ bwt_idx_prefix ]
         bowtie_proc=None
+        shellcmd=""
         unzip_proc=None
-        old_unzip_cmd = list(unzip_cmd)
-        old_fix_map_cmd = list(fix_map_cmd)
-        old_bowtie_cmd = list(bowtie_cmd)
 
 
-        for thi in range(0, old_num_threads):
-            shellcmd=""
-            bowtie_cmd = list(old_bowtie_cmd)
-            for i in range(0, len(old_unzip_cmd)):
-                unzip_cmd[i] = add_part_number(old_unzip_cmd[i], thi)
-            for i in range(0, len(old_fix_map_cmd)):
-                fix_map_cmd[i] = add_part_number(old_fix_map_cmd[i], thi)
-
-            if multihits_out != None:
-               #special prefilter bowtie run: we use prep_reads on the fly
-               #in order to get multi-mapped reads to exclude later
-               prep_cmd = prep_reads_cmd(params, params.preflt_data[0].seqfiles, params.preflt_data[0].qualfiles,
-                                          params.preflt_data[1].seqfiles, params.preflt_data[1].qualfiles)
-               prep_cmd.insert(1,"--flt-side="+str(multihits_out))
-               sides=["left", "right"]
-               preplog_fname=logging_dir + "prep_reads.prefilter_%s.log" % sides[multihits_out]
-               prepfilter_log = open(preplog_fname,"w")
-               unzip_proc = subprocess.Popen(prep_cmd,
-                                    stdout=subprocess.PIPE,
-                                    stderr=prepfilter_log)
-               shellcmd=' '.join(prep_cmd) + "|"
-            else:
-               z_input=use_zpacker and reads_file.endswith(".z")
-               if z_input:
-                  unzip_proc = subprocess.Popen(unzip_cmd,
-                                         stdin=open(reads_file, "rb"),
-                                         stderr=tophat_log, stdout=subprocess.PIPE)
-                  shellcmd=' '.join(unzip_cmd) + "< " +reads_file +"|"
+        if multihits_out != None:
+           #special prefilter bowtie run: we use prep_reads on the fly
+           #in order to get multi-mapped reads to exclude later
+           prep_cmd = prep_reads_cmd(params, params.preflt_data[0].seqfiles, params.preflt_data[0].qualfiles,
+                                      params.preflt_data[1].seqfiles, params.preflt_data[1].qualfiles)
+           prep_cmd.insert(1,"--flt-side="+str(multihits_out))
+           sides=["left", "right"]
+           preplog_fname=logging_dir + "prep_reads.prefilter_%s.log" % sides[multihits_out]
+           prepfilter_log = open(preplog_fname,"w")
+           unzip_proc = subprocess.Popen(prep_cmd,
+                                stdout=subprocess.PIPE,
+                                stderr=prepfilter_log)
+           shellcmd=' '.join(prep_cmd) + "|"
+        else:
+           z_input=use_zpacker and reads_file.endswith(".z")
+           if z_input:
+              unzip_proc = subprocess.Popen(unzip_cmd,
+                                     stdin=open(reads_file, "rb"),
+                                     stderr=tophat_log, stdout=subprocess.PIPE)
+              shellcmd=' '.join(unzip_cmd) + "< " +reads_file +"|"
+           else:
+               #must be uncompressed fastq input (unmapped reads from a previous run)
+               #or a BAM file with unmapped reads
+               if bam_input:
+                   unzip_proc = subprocess.Popen(unzip_cmd, stderr=tophat_log, stdout=subprocess.PIPE)
+                   shellcmd=' '.join(unzip_cmd) + "|"
                else:
-                   #must be uncompressed fastq input (unmapped reads from a previous run)
-                   #or a BAM file with unmapped reads
-                   if bam_input:
-                       unzip_proc = subprocess.Popen(unzip_cmd, stderr=tophat_log, stdout=subprocess.PIPE)
-                       shellcmd=' '.join(unzip_cmd) + "|"
-                   else:
-                       bowtie_cmd += [reads_file]
-                       if not unzip_proc:
-                            bowtie_proc = subprocess.Popen(bowtie_cmd,
-                                         stdout=subprocess.PIPE,
-                                         stderr=open(bwt_logname, "w"))
-            if unzip_proc:
-                  #input is compressed OR prep_reads is used as a filter
-                  bowtie_cmd += ['-']
-                  bowtie_proc = subprocess.Popen(bowtie_cmd,
-                                         stdin=unzip_proc.stdout,
-                                         stdout=subprocess.PIPE,
-                                         stderr=open(bwt_logname, "w"))
-                  unzip_proc.stdout.close() # see http://bugs.python.org/issue7678
+                   bowtie_cmd += [reads_file]
+                   if not unzip_proc:
+                        bowtie_proc = subprocess.Popen(bowtie_cmd,
+                                     stdout=subprocess.PIPE,
+                                     stderr=open(bwt_logname, "w"))
+        if unzip_proc:
+              #input is compressed OR prep_reads is used as a filter
+              bowtie_cmd += ['-']
+              bowtie_proc = subprocess.Popen(bowtie_cmd,
+                                     stdin=unzip_proc.stdout,
+                                     stdout=subprocess.PIPE,
+                                     stderr=open(bwt_logname, "w"))
+              unzip_proc.stdout.close() # see http://bugs.python.org/issue7678
 
-            shellcmd += ' '.join(bowtie_cmd) + '|' + ' '.join(fix_map_cmd)
-            pipeline_proc = None
-            fix_order_proc = None
-            #write BAM format directly
-            if t_mapping:
-                #pipe into map2gtf
-                fix_order_proc = subprocess.Popen(fix_map_cmd,
-                                              stdin=bowtie_proc.stdout,
-                                              stdout=subprocess.PIPE,
-                                              stderr=tophat_log)
-                bowtie_proc.stdout.close()
-                m2g_cmd = [prog_path("map2gtf")]
-                m2g_cmd += ["--sam-header", genome_sam_header_filename]
-                #m2g_cmd.append(params.gff_annotation)
-                m2g_cmd.append(params.transcriptome_index+".fa.tlst")
-                m2g_cmd.append("-") #incoming uncompressed BAM stream
-                m2g_cmd.append(mapped_reads)
-                m2g_log = logging_dir + "m2g_"+readfile_basename+".out"
-                m2g_err = logging_dir + "m2g_"+readfile_basename+".err"
-                shellcmd += ' | '+' '.join(m2g_cmd)+ ' > '+m2g_log
-                pipeline_proc = subprocess.Popen(m2g_cmd,
-                                                  stdin=fix_order_proc.stdout,
-                                                  stdout=open(m2g_log, "w"),
-                                                  stderr=open(m2g_err, "w"))
-                fix_order_proc.stdout.close()
-            else:
-                fix_order_proc = subprocess.Popen(fix_map_cmd,
-                                              stdin=bowtie_proc.stdout,
-                                              stderr=tophat_log)
-                bowtie_proc.stdout.close()
-                pipeline_proc = fix_order_proc
+        shellcmd += ' '.join(bowtie_cmd) + '|' + ' '.join(fix_map_cmd)
+        pipeline_proc = None
+        fix_order_proc = None
+        #write BAM format directly
+        if t_mapping:
+            #pipe into map2gtf
+            fix_order_proc = subprocess.Popen(fix_map_cmd,
+                                          stdin=bowtie_proc.stdout,
+                                          stdout=subprocess.PIPE,
+                                          stderr=tophat_log)
+            bowtie_proc.stdout.close()
+            m2g_cmd = [prog_path("map2gtf")]
+            m2g_cmd += ["--sam-header", genome_sam_header_filename]
+            #m2g_cmd.append(params.gff_annotation)
+            m2g_cmd.append(params.transcriptome_index+".fa.tlst")
+            m2g_cmd.append("-") #incoming uncompressed BAM stream
+            m2g_cmd.append(mapped_reads)
+            m2g_log = logging_dir + "m2g_"+readfile_basename+".out"
+            m2g_err = logging_dir + "m2g_"+readfile_basename+".err"
+            shellcmd += ' | '+' '.join(m2g_cmd)+ ' > '+m2g_log
+            pipeline_proc = subprocess.Popen(m2g_cmd,
+                                              stdin=fix_order_proc.stdout,
+                                              stdout=open(m2g_log, "w"),
+                                              stderr=open(m2g_err, "w"))
+            fix_order_proc.stdout.close()
+        else:
+            fix_order_proc = subprocess.Popen(fix_map_cmd,
+                                          stdin=bowtie_proc.stdout,
+                                          stderr=tophat_log)
+            bowtie_proc.stdout.close()
+            pipeline_proc = fix_order_proc
 
-            print >> run_log, shellcmd
-            retcode = None
-            if pipeline_proc:
-                pipeline_proc.communicate()
-                retcode = pipeline_proc.returncode
-                bowtie_proc.wait()
-                r=bowtie_proc.returncode
-                if r:
-                  die(fail_str+"Error running bowtie:\n"+log_tail(bwt_logname,100))
-            if use_FIFO:
-                if fifo_pid and not os.path.exists(unmapped_reads_out):
-                    try:
-                      os.kill(fifo_pid, signal.SIGTERM)
-                    except:
-                      pass
-            if retcode:
-                die(fail_str+"Error running:\n"+shellcmd)
+        print >> run_log, shellcmd
+        retcode = None
+        if pipeline_proc:
+            pipeline_proc.communicate()
+            retcode = pipeline_proc.returncode
+            bowtie_proc.wait()
+            r=bowtie_proc.returncode
+            if r:
+              die(fail_str+"Error running bowtie:\n"+log_tail(bwt_logname,100))
+        if use_FIFO:
+            if fifo_pid and not os.path.exists(unmapped_reads_out):
+                try:
+                  os.kill(fifo_pid, signal.SIGTERM)
+                except:
+                  pass
+        if retcode:
+            die(fail_str+"Error running:\n"+shellcmd)
     except OSError, o:
         die(fail_str+"Error: "+str(o))
 
@@ -2479,12 +2467,7 @@ def bowtie(params,
         if not params.bowtie2:
             params.bowtie_alignment_option = backup_bowtie_alignment_option
 
-    print mapped_reads, unmapped_reads_out #zzh
-
-    params.system_params.num_threads = old_num_threads
-
     return (mapped_reads, unmapped_reads_out)
-
 
 
 # Retrieve a .juncs file from a GFF file by calling the gtf_juncs executable
@@ -2728,11 +2711,11 @@ def compile_reports(params, sam_header_filename, ref_fasta, mappings, readfiles,
                        fusions,
                        alignments_output_filename,
                        left_maps,
-                       left_reads])
+                       add_part_number(left_reads, 0)])
 
     if len(right_maps) > 0 and right_reads:
         report_cmd.append(right_maps)
-        report_cmd.append(right_reads)
+        report_cmd.append(add_part_number(right_reads, 0))
 
     try:
         print >> run_log, " ".join(report_cmd)
@@ -2898,6 +2881,7 @@ def split_reads(reads_filename,
     existing_seg_files = glob.glob(prefix+"_seg*"+extension)
     if resumeStage > currentStage and len(existing_seg_files)>0:
          #skip this, we are going to return the existing files
+         existing_seg_files.sort()
          return existing_seg_files
     zreads = ZReader(reads_filename, params, False)
 
@@ -3086,8 +3070,8 @@ def junctions_from_segments(params,
                             unmapped_reads,
                             ref_fasta):
     # if left_reads_map != left_seg_maps[0]:
-
-    out_path=getFileDir(left_seg_maps[0])
+    
+    out_path=getFileDir(left_seg_maps[0][0])
     juncs_out=out_path+"segment.juncs"
     insertions_out=out_path+"segment.insertions"
     deletions_out =out_path+"segment.deletions"
@@ -3099,25 +3083,25 @@ def junctions_from_segments(params,
         print >> sys.stderr, "\tCoverage-search algorithm is turned on, making this step very slow"
         print >> sys.stderr, "\tPlease try running TopHat again with the option (--no-coverage-search) if this step takes too much time or memory."
 
-    left_maps = ','.join(left_seg_maps)
+    left_maps = ','.join(left_seg_maps[0])
     log_fname = logging_dir + "segment_juncs.log"
     segj_log = open(log_fname, "w")
     segj_cmd = [prog_path("segment_juncs")]
 
     segj_cmd.extend(params.cmd())
     segj_cmd.extend(["--sam-header", sam_header_filename,
-                     "--ium-reads", ",".join(unmapped_reads),
+                     "--ium-reads", ",".join(unmapped_reads[0]),
                      ref_fasta,
                      juncs_out,
                      insertions_out,
                      deletions_out,
                      fusions_out,
-                     left_reads,
-                     left_reads_map,
+                     add_part_number(left_reads, 0),
+                     left_reads_map[0],
                      left_maps])
     if right_seg_maps:
-        right_maps = ','.join(right_seg_maps)
-        segj_cmd.extend([right_reads, right_reads_map, right_maps])
+        right_maps = ','.join(right_seg_maps[0])
+        segj_cmd.extend([add_part_number(right_reads, 0), right_reads_map[0], right_maps])
     try:
         print >> run_log, " ".join(segj_cmd)
         retcode = subprocess.call(segj_cmd,
@@ -3136,6 +3120,81 @@ def junctions_from_segments(params,
 
     return [juncs_out, insertions_out, deletions_out, fusions_out]
 
+
+def zzh_del_junctions_from_segments(params,
+                            sam_header_filename,
+                            left_reads,
+                            left_reads_map,
+                            left_seg_maps,
+                            right_reads,
+                            right_reads_map,
+                            right_seg_maps,
+                            unmapped_reads,
+                            ref_fasta):
+    # if left_reads_map != left_seg_maps[0]:
+  juncs_all = []
+  insertions_all = []
+  deletions_all = []
+  fusions_all = []
+  procs = [0]*params.system_params.num_threads
+  for thi in range(0, params.system_params.num_threads):
+
+    out_path=getFileDir(left_seg_maps[thi][0])
+    juncs_out=out_path+"segment_" + str(thi) + ".juncs"
+    insertions_out=out_path+"segment_" + str(thi) + ".insertions"
+    deletions_out =out_path+"segment_" + str(thi) + ".deletions"
+    fusions_out = out_path+"segment_" + str(thi) + ".fusions"
+    juncs_all.append(juncs_out)
+    insertions_all.append(insertions_out)
+    deletions_all.append(deletions_out)
+    fusions_all.append(fusions_out)
+    if resumeStage>currentStage and fileExists(juncs_out):
+       return [juncs_all, insertions_all, deletions_all, fusions_all]
+    th_log("Searching for junctions via segment mapping")
+    if params.coverage_search == True:
+        print >> sys.stderr, "\tCoverage-search algorithm is turned on, making this step very slow"
+        print >> sys.stderr, "\tPlease try running TopHat again with the option (--no-coverage-search) if this step takes too much time or memory."
+
+    left_maps = ','.join(left_seg_maps[thi])
+    log_fname = logging_dir + "segment_juncs_" + str(thi) + ".log"
+    segj_log = open(log_fname, "w")
+    segj_cmd = [prog_path("segment_juncs")]
+
+    segj_cmd.extend(params.cmd())
+    segj_cmd.extend(["--sam-header", sam_header_filename,
+                     "--ium-reads", ",".join(unmapped_reads[thi]),
+                     ref_fasta,
+                     juncs_out,
+                     insertions_out,
+                     deletions_out,
+                     fusions_out,
+                     add_part_number(left_reads, thi),
+                     left_reads_map[thi],
+                     left_maps])
+    if right_seg_maps:
+        right_maps = ','.join(right_seg_maps[thi])
+        segj_cmd.extend([add_part_number(right_reads, thi), right_reads_map[thi], right_maps])
+    try:
+        print >> run_log, " ".join(segj_cmd)
+        procs[thi] = subprocess.Popen(segj_cmd,
+                                 preexec_fn=subprocess_setup,
+                                 stderr=segj_log)
+
+        # spanning_reads returned an error
+
+    # cvg_islands not found
+    except OSError, o:
+        if o.errno == errno.ENOTDIR or o.errno == errno.ENOENT:
+           th_logp(fail_str + "Error: segment_juncs not found on this system")
+        die(str(o))
+
+  for thi in range(0, params.system_params.num_threads):
+    retcode = procs[thi].wait()
+    if retcode != 0:
+        die(fail_str+"Error: segment-based junction search failed with err ="+str(retcode)+"\n"+log_tail(log_fname))
+
+  return [juncs_all, insertions_all, deletions_all, fusions_all]
+
 # Joins mapped segments into full-length read alignments via the executable
 # long_spanning_reads
 def join_mapped_segments(params,
@@ -3149,6 +3208,15 @@ def join_mapped_segments(params,
                          contig_seg_maps,
                          spliced_seg_maps,
                          alignments_out_name):
+#    print "[ reads ]: ", reads
+#    print "[ possible_juncs ]: ", possible_juncs
+#    print "[ possible_insertions ]: ", possible_insertions
+#    print "[ possible_deletions ]: ", possible_deletions
+#    print "[ possible_fusions ]: ", possible_fusions
+#    print "[ contig_seg_maps ]: ", contig_seg_maps
+#    print "[ spliced_seg_maps ]: ", spliced_seg_maps
+#    print "[ alignments_out_name ]: ", alignments_out_name
+
     rn=""
     contig_seg_maps = ','.join(contig_seg_maps)
 
@@ -3439,6 +3507,52 @@ def add_part_number(fname, num):
     return fname
 # end of add_part_number
 
+# delete suffixes of a file for multithread using 
+def del_part_number(fname, num):
+    needle = "left_" + str(num)
+    if fname.find(needle) != -1:
+        return fname.replace(needle, "left")
+    needle = "right_" + str(num)
+    if fname.find(needle) != -1:
+        return fname.replace(needle, "right")
+    return fname
+# end of del_part_number
+
+def bowtie_wrap(queue,
+                params,
+                bwt_idx_prefix,
+                sam_headers,
+                reads_file,
+                # reads_format,
+                num_mismatches,
+                gap_length,
+                edit_dist,
+                realign_edit_dist,
+                mapped_reads,
+                unmapped_reads,
+                extra_output = "",
+                mapping_type = _reads_vs_G,
+                multihits_out = None):
+    (unspliced_sam, unmapped_reads_out) = bowtie(params,
+                                            bwt_idx_prefix,
+                                            sam_headers,
+                                            reads_file,
+                                            # reads_format,
+                                            num_mismatches,
+                                            gap_length,
+                                            edit_dist,
+                                            realign_edit_dist,
+                                            mapped_reads,
+                                            unmapped_reads,
+                                            extra_output,
+                                            mapping_type,
+                                            multihits_out)
+
+    queue.put(unspliced_sam)
+    queue.put(unmapped_reads_out)
+
+
+
 # using multi process to deal with the original reads using bowtie
 def bowtie_process_wrap(queue,
                         params,
@@ -3456,22 +3570,48 @@ def bowtie_process_wrap(queue,
                         mapping_type = _reads_vs_G,
                         multihits_out = None):
 
-    (unspliced_sam, unmapped_reads) = bowtie(params,
-                                            bwt_idx_prefix,
-                                            sam_headers,
-                                            reads_list,
-                                            # reads_format,
-                                            num_mismatches,
-                                            gap_length,
-                                            edit_dist,
-                                            realign_edit_dist,
-                                            mapped_reads,
-                                            unmapped_reads,
-                                            extra_output,
-                                            mapping_type,
-                                            multihits_out)
+    params = cp.deepcopy(params)
+    old_num_threads = params.system_params.num_threads
+    bowtie_part_num = 2
+    bowtie_num_threads = old_num_threads / bowtie_part_num
+    if bowtie_num_threads < 1:
+        bowtie_num_threads = 1
+        bowtie_part_num = old_num_threads
+    params.system_params.num_threads = bowtie_num_threads/2 + 2
+    unspliced_sam = [None]*old_num_threads
+    unmapped_reads_out = [None]*old_num_threads
+    for bthi in range(bowtie_num_threads):
+        que = [None] * bowtie_part_num
+        proc = [None] * bowtie_part_num
+        for parti in range(bowtie_part_num):
+            que[parti] = Queue()
+            thi = bthi*bowtie_part_num + parti
+            proc[parti] = Process(target=bowtie_wrap,
+                                    args = (que[parti],
+                                    params,
+                                    bwt_idx_prefix,
+                                    sam_headers,
+                                    [add_part_number(reads_list[0], thi)],
+                                    # reads_format,
+                                    num_mismatches,
+                                    gap_length,
+                                    edit_dist,
+                                    realign_edit_dist,
+                                    add_part_number(mapped_reads, thi),
+                                    add_part_number(unmapped_reads, thi),
+                                    extra_output,
+                                    mapping_type,
+                                    multihits_out))
+            proc[parti].start()
+
+        for parti in range (bowtie_part_num):
+            thi = bthi*bowtie_part_num + parti
+            proc[parti].join()
+            unspliced_sam[thi] = que[parti].get()
+            unmapped_reads_out[thi] = que[parti].get()
+
     queue.put(unspliced_sam)
-    queue.put(unmapped_reads)
+    queue.put(unmapped_reads_out)
 # end of bowtie_process_wrap
 
 # reads segment bowtie process
@@ -3500,42 +3640,70 @@ def bowtie_seg_process_wrap(queue,
                         multihits_out = None):
 
         
-    seg_maps = []
-    unmapped_segs = []
-    segs = []
+    params = cp.deepcopy(params)
+    old_num_threads = params.system_params.num_threads
+    bowtie_part_num = 4
+    bowtie_num_threads = old_num_threads / bowtie_part_num
+    if bowtie_num_threads < 1:
+        bowtie_num_threads = 1
+        bowtie_part_num = old_num_threads
+    params.system_params.num_threads = bowtie_num_threads/2 + 2
+    old_fbasename = fbasename
+    seg_maps = [[] for i in range(old_num_threads)]
+    unmapped_segs = [[] for i in range(old_num_threads)]
+    segs = [[] for i in range(old_num_threads)]
     maps = []
-
+    read_segments = [None] * old_num_threads
     if num_segs > 1 and have_IUM:
         # split up the IUM reads into segments
         # unmapped_reads can be in BAM format
-        read_segments = split_reads(unmapped_reads,
+        for thi in range(0, old_num_threads):  
+            fbasename = add_part_number(old_fbasename, thi) 
+            read_segments[thi] = split_reads(unmapped_reads[thi],
                                     tmp_dir + fbasename,
                                     False,
                                     params,
                                     segment_len)
 
         # Map each segment file independently with Bowtie
-        for i in range(len(read_segments)):
-            seg = read_segments[i]
-            fbasename=getFileBaseName(seg)
-            seg_out =  tmp_dir + fbasename
-            unmapped_seg = tmp_dir + fbasename + "_unmapped"
-            extra_output = "(%d/%d)" % (i+1, len(read_segments))
-            (seg_map, unmapped) = bowtie(params,
-                                         bwt_idx_prefix,
-                                         sam_headers,
-                                         [seg],
-                                         params.segment_mismatches,
-                                         params.segment_mismatches,
-                                         params.segment_mismatches,
-                                         params.segment_mismatches,
-                                         seg_out,
-                                         unmapped_seg,
-                                         extra_output,
-                                         _segs_vs_G)
-            seg_maps.append(seg_map)
-            unmapped_segs.append(unmapped)
-            segs.append(seg)
+        for i in range(len(read_segments[0])):
+            for bthi in range(bowtie_num_threads):
+                que = [None] * bowtie_part_num
+                proc = [None] * bowtie_part_num
+
+                for parti in range(bowtie_part_num):
+                    que[parti] = Queue()
+                    thi = bthi*bowtie_part_num + parti
+                    seg = read_segments[thi][i]
+                    segs[thi].append(seg)
+                    fbasename=getFileBaseName(seg)
+                    seg_out =  tmp_dir + fbasename
+                    unmapped_seg = tmp_dir + fbasename + "_unmapped"
+                    extra_output = "(%d/%d)" % (i+1, len(read_segments[thi]))
+                    proc[parti] = Process(target=bowtie_wrap,
+                                        args = (que[parti],
+                                            params,
+                                            bwt_idx_prefix,
+                                            sam_headers,
+                                            [seg],
+                                            # reads_format,
+                                            params.segment_mismatches,
+                                            params.segment_mismatches,
+                                            params.segment_mismatches,
+                                            params.segment_mismatches,
+                                            seg_out,
+                                            unmapped_seg,
+                                            extra_output,
+                                            _segs_vs_G))
+                    proc[parti].start()
+
+                for parti in range (bowtie_part_num):
+                    thi = bthi*bowtie_part_num + parti
+                    proc[parti].join()
+                    seg_map = que[parti].get()
+                    unmapped = que[parti].get()
+                    seg_maps[thi].append(seg_map)
+                    unmapped_segs[thi].append(unmapped)
 
         # Collect the segment maps for left and right reads together
         maps = Maps(unspliced_sam, seg_maps, unmapped_segs, segs)
@@ -3564,6 +3732,7 @@ def spliced_alignment(params,
                       user_supplied_insertions,
                       user_supplied_deletions):
 
+    th_log("spliced_alignment start")
     possible_juncs = []
     possible_juncs.extend(user_supplied_junctions)
 
@@ -3572,6 +3741,8 @@ def spliced_alignment(params,
     possible_deletions = []
     possible_deletions.extend(user_supplied_deletions)
     possible_fusions = []
+
+    old_num_threads = params.system_params.num_threads
 
     left_reads, right_reads = prepared_reads
 
@@ -3699,7 +3870,11 @@ def spliced_alignment(params,
         #if use_zpacker: unspliced_out+=".z"
         unmapped_unspliced = tmp_dir + fbasename + "_unmapped"
 
-        have_IUM = nonzeroFile(unmapped_reads)
+
+        for thi in range(0, params.system_params.num_threads):
+            if nonzeroFile(unmapped_reads[thi]):
+                have_IUM = True
+                break
         if ri==0 and have_IUM:
            have_left_IUM = True
         setRunStage(_stage_map_segments)
@@ -3733,8 +3908,6 @@ def spliced_alignment(params,
             bowtie_proc_handle[ri].join()
             maps[ri] = bowtie_proc_queue[ri].get()
 
-    exit(0) #zzh
-
     # XXX: At this point if using M2G, have three sets of reads:
     # mapped to transcriptome, mapped to genome, and unmapped (potentially
     # spliced or poly-A tails) - hp
@@ -3750,7 +3923,8 @@ def spliced_alignment(params,
     if right_reads and maps[1]:
         right_reads_map = maps[1].unspliced_sam
         right_seg_maps = maps[1].seg_maps
-        unmapped_reads.extend(maps[1].unmapped_segs)
+        for thi in range(old_num_threads):
+            unmapped_reads[thi].extend(maps[1].unmapped_segs[thi])
     else:
         right_reads_map = None
         right_seg_maps = None
@@ -3775,8 +3949,10 @@ def spliced_alignment(params,
                                         ref_fasta)
 
         if not params.system_params.keep_tmp:
-            for unmapped_seg in unmapped_reads:
+          for thi in range(old_num_threads):  
+            for unmapped_seg in unmapped_reads[thi]:
                 removeFileWithIndex(unmapped_seg)
+
 
         if os.path.getsize(juncs[0]) != 0:
             possible_juncs.append(juncs[0])
@@ -3843,7 +4019,7 @@ def spliced_alignment(params,
     for ri in (0,1):
         reads = initial_reads[ri]
         if not reads: continue
-        spliced_seg_maps = []
+        spliced_seg_maps = [[] for i in range(old_num_threads)]
         rfname=getFileBaseName(reads)
         rfdir=getFileDir(reads)
 
@@ -3857,65 +4033,94 @@ def spliced_alignment(params,
             unspl_samfile = None
 
         have_IUM = True
-        if reads == None or not nonzeroFile(reads):
+        if reads == None or not nonzeroFile(add_part_number(reads,0)):
             have_IUM = False
 
         if have_IUM:
             if junc_idx_prefix:
-                i = 0
-                for seg in maps[ri].segs:
-                    #search each segment
-                    fsegname = getFileBaseName(seg)
-                    seg_out = tmp_dir + fsegname + ".to_spliced"
-                    extra_output = "(%d/%d)" % (i+1, len(maps[ri].segs))
-                    (seg_map, unmapped) = bowtie(params,
-                                                 tmp_dir + junc_idx_prefix,
-                                                 juncs_bwt_samheader,
-                                                 [seg],
-                                                 params.segment_mismatches,
-                                                 params.segment_mismatches,
-                                                 params.segment_mismatches,
-                                                 params.segment_mismatches,
-                                                 seg_out,
-                                                 None,
-                                                 extra_output,
-                                                 _segs_vs_J)
-                    spliced_seg_maps.append(seg_map)
-                    i += 1
+                bowtie_part_num = 4
+                bowtie_num_threads = old_num_threads / bowtie_part_num
+                if bowtie_num_threads < 1:
+                    bowtie_num_threads = 1
+                    bowtie_part_num = old_num_threads
+                params.system_params.num_threads = bowtie_num_threads + 2
 
+                for i in range(len(maps[ri].segs[0])):
+                    #search each segment
+
+                    for bthi in range(bowtie_num_threads):
+                        que = [None] * bowtie_part_num
+                        proc = [None] * bowtie_part_num
+            
+                        for parti in range(bowtie_part_num):
+                            que[parti] = Queue()
+                            thi = bthi*bowtie_part_num + parti
+                            seg = maps[ri].segs[thi][i]
+                            fsegname = getFileBaseName(seg)
+                            seg_out = tmp_dir + fsegname + ".to_spliced"
+                            extra_output = "(%d/%d)" % (i+1, len(maps[ri].segs[thi]))
+
+                            proc[parti] = Process(target=bowtie_wrap,
+                                                args = (que[parti],
+                                                    params,
+                                                    tmp_dir + junc_idx_prefix,
+                                                    juncs_bwt_samheader,
+                                                    [seg],
+                                                    # reads_format,
+                                                    params.segment_mismatches,
+                                                    params.segment_mismatches,
+                                                    params.segment_mismatches,
+                                                    params.segment_mismatches,
+                                                    seg_out,
+                                                    None,
+                                                    extra_output,
+                                                    _segs_vs_J))
+                            proc[parti].start()
+            
+                        for parti in range (bowtie_part_num):
+                            thi = bthi*bowtie_part_num + parti
+                            proc[parti].join()
+                            seg_map = que[parti].get()
+                            unmapped = que[parti].get()
+                            spliced_seg_maps[thi].append(seg_map)
+            
                 # Join the contigous and spliced segment hits into full length
                 #   read alignments
                 # -- spliced mappings built from all segment mappings vs genome and junc_db
+                params.system_params.num_threads = old_num_threads
                 join_mapped_segments(params,
                                      sam_header_filename,
-                                     reads,
+                                     add_part_number(reads, 0),
                                      ref_fasta,
                                      possible_juncs,
                                      possible_insertions,
                                      possible_deletions,
                                      possible_fusions,
-                                     maps[ri].seg_maps,
-                                     spliced_seg_maps,
-                                     mapped_reads)
+                                     maps[ri].seg_maps[0],
+                                     spliced_seg_maps[0],
+                                     add_part_number(mapped_reads, 0))
                 #if not params.system_params.keep_tmp:
                 #    for seg_map in maps[ri].seg_maps:
                 #        removeFileWithIndex(seg_map)
                 #    for spliced_seg_map in spliced_seg_maps:
                 #        removeFileWithIndex(spliced_seg_map)
+
         maps[ri] = []
         if m2g_map and \
                nonzeroFile(m2g_map):
             maps[ri].append(m2g_map)
 
-        if unspl_samfile and \
-               nonzeroFile(unspl_samfile):
-            maps[ri].append(unspl_samfile)
+        if unspl_samfile[0] and \
+               nonzeroFile(unspl_samfile[0]):
+            maps[ri].append(unspl_samfile[0])
 
-        if mapped_reads and nonzeroFile(mapped_reads):
-            maps[ri].append(mapped_reads)
+        if mapped_reads:
+            if(nonzeroFile(add_part_number(mapped_reads, 0))):
+                maps[ri].append(add_part_number(mapped_reads, 0))
         else:
             for bam_i in range(0, params.system_params.num_threads):
                 temp_bam = mapped_reads[:-4] + str(bam_i) + ".bam"
+                print "temp_bam", temp_bam
                 if nonzeroFile(temp_bam):
                     maps[ri].append(mapped_reads[:-4])
                     break
@@ -4180,7 +4385,7 @@ def main(argv=None):
                          left_reads_list, left_quals_list,
                          right_reads_list, right_quals_list,
                          multihit_reads)
-        if currentStage < resumeStage and not fileExists(prep_info.kept_reads[0],40):
+        if currentStage < resumeStage and not fileExists(add_part_number(prep_info.kept_reads[0],0),40):
              die("Error: prepared reads file missing, cannot resume!")
 
         min_read_len = prep_info.min_len[0]

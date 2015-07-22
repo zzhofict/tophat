@@ -47,6 +47,13 @@ using namespace std;
 // daehwan //geo
 //#define B_DEBUG 1
 
+string replace_thread_num(string strname, int thread_num) {
+    string repstr = "_";
+    str_appendInt(repstr, thread_num);
+    repstr.push_back('_');
+    return str_replace(strname, "_0_", repstr);
+} 
+
 void print_usage()
 {
     fprintf(stderr, "Usage:   segment_juncs <ref.fa> <segment.juncs> <segment.insertions> <segment.deletions> <left_reads.fq> <left_reads.bwtout> <left_seg1.bwtout,...,segN.bwtout> [right_reads.fq right_reads.bwtout right_seg1.bwtout,...,right_segN.bwtout]\n");
@@ -2810,8 +2817,8 @@ void find_insertions_and_deletions(RefSequenceTable& rt,
   bool got_read = reads_file.getRead(insert_id, read);
   if (!got_read)
     {
-      err_die("Error: could not get read# %d from stream!",
-	      (int)insert_id);
+       err_die("Error: could not get read# %d from stream! : %s",
+	      (int)insert_id, reads_file.filename());
       return;
     }
 	
@@ -3308,8 +3315,8 @@ void find_gaps(RefSequenceTable& rt,
   Read read;
   bool got_read = reads_file.getRead(hits_for_read[last_segment].insert_id, read);
   if (!got_read) {
-    err_die("Error: could not get read# %d from stream!",
-	    (int)hits_for_read[last_segment].insert_id);
+    err_die("Error: could not get read# %d from stream! : %s",
+	    (int)hits_for_read[last_segment].insert_id, reads_file.filename());
     return;
   }
   
@@ -4710,6 +4717,7 @@ void driver(istream& ref_stream,
     right_seg_fname_for_segment_search = right_segmap_fnames.back();  
   
   fprintf(stderr, ">> Performing segment-search:\n");
+//  num_threads = 1;
   
   if (left_segmap_fnames.size() > 1)
     {
@@ -4719,7 +4727,7 @@ void driver(istream& ref_stream,
       vector<vector<int64_t> > offsets;
       vector<int64_t> partner_offsets;
       vector<int64_t> seg_partner_offsets;
-      if (num_threads > 1)
+/*      if (num_threads > 1)
 	{
 	  vector<string> fnames;
 	  fnames.push_back(left_reads_fname);
@@ -4734,16 +4742,21 @@ void driver(istream& ref_stream,
 	  if (enough_data && right_seg_fname_for_segment_search != "")
 	    calculate_offsets_from_ids(right_seg_fname_for_segment_search, read_ids, seg_partner_offsets);
 	}
-      
+*/    
       vector<boost::thread*> threads;
+      vector<vector<string> > left_segmap_fnames_cp(num_threads, left_segmap_fnames);
       for (int i = 0; i < num_threads; ++i)
 	{
 	  SegmentSearchWorker worker;
 	  worker.rt = &rt;
-	  worker.reads_fname = left_reads_fname;
-	  worker.segmap_fnames = &left_segmap_fnames;
-	  worker.partner_reads_map_fname = right_reads_map_fname;
-	  worker.seg_partner_reads_map_fname = right_seg_fname_for_segment_search;
+	  worker.reads_fname = replace_thread_num(left_reads_fname, i);
+      for(size_t si=0; si<left_segmap_fnames.size(); ++si){
+          left_segmap_fnames_cp[i][si] = replace_thread_num(left_segmap_fnames[si], i);
+      }
+	  worker.segmap_fnames = &left_segmap_fnames_cp[i];
+	  worker.partner_reads_map_fname = replace_thread_num(right_reads_map_fname, i);
+	  worker.seg_partner_reads_map_fname = replace_thread_num(right_seg_fname_for_segment_search, i);
+
 	  worker.juncs = &vseg_juncs[i];
 	  worker.deletions = &vdeletions[i];
 	  worker.insertions = &vinsertions[i];
@@ -4752,26 +4765,14 @@ void driver(istream& ref_stream,
 	  worker.partner_hit_offset = 0;
 	  worker.seg_partner_hit_offset = 0;
 	  
-	  if (i == 0)
-	    {
 	      worker.begin_id = 0;
 	      worker.seg_offsets = vector<int64_t>(left_segmap_fnames.size(), 0);
 	      worker.read_offset = 0;
-	    }
-	  else
-	    {
-	      worker.begin_id = read_ids[i-1];
-	      worker.seg_offsets.insert(worker.seg_offsets.end(), offsets[i-1].begin()+1, offsets[i-1].end());
-	      worker.read_offset = offsets[i-1][0];
-	      if (partner_offsets.size() > 0)
-		worker.partner_hit_offset = partner_offsets[i-1];
-	      if (seg_partner_offsets.size() > 0)
-		worker.seg_partner_hit_offset = seg_partner_offsets[i-1];
-	    }
-	  
-	  worker.end_id = (i+1 < num_threads) ? read_ids[i] : std::numeric_limits<uint64_t>::max();
+	      	  
+	  worker.end_id = std::numeric_limits<uint64_t>::max();
       //Geo debug:
       //fprintf(stderr, "Worker %d: begin_id=%lu, end_id=%lu\n", i, worker.begin_id, worker.end_id);
+//      worker();
 
 	  if (num_threads > 1 && i + 1 < num_threads)
 	    threads.push_back(new boost::thread(worker));
@@ -4804,8 +4805,8 @@ void driver(istream& ref_stream,
 	  fnames.push_back(right_reads_fname);
 	  fnames.insert(fnames.end(), right_segmap_fnames.begin(), right_segmap_fnames.end());
 	  bool enough_data = calculate_offsets(fnames, read_ids, offsets);
-	  if (!enough_data)
-	    num_threads = 1;
+//	  if (!enough_data)
+//	    num_threads = 1;
 
 	  if (enough_data)
 	    calculate_offsets_from_ids(left_reads_map_fname, read_ids, partner_offsets);
@@ -4815,14 +4816,18 @@ void driver(istream& ref_stream,
 	}
 			
       vector<boost::thread*> threads;
+      vector<vector<string> > right_segmap_fnames_cp(num_threads, right_segmap_fnames);
       for (int i = 0; i < num_threads; ++i)
 	{
 	  SegmentSearchWorker worker;
 	  worker.rt = &rt;
-	  worker.reads_fname = right_reads_fname;
-	  worker.segmap_fnames = &right_segmap_fnames;
-	  worker.partner_reads_map_fname = left_reads_map_fname;
-	  worker.seg_partner_reads_map_fname = left_seg_fname_for_segment_search;
+	  worker.reads_fname = replace_thread_num(right_reads_fname, i);
+      for(size_t si=0; si<right_segmap_fnames.size(); ++si){
+          right_segmap_fnames_cp[i][si] = replace_thread_num(right_segmap_fnames[si], i);
+      }	  
+      worker.segmap_fnames = &right_segmap_fnames_cp[i];
+	  worker.partner_reads_map_fname = replace_thread_num(left_reads_map_fname, i);
+	  worker.seg_partner_reads_map_fname = replace_thread_num(left_seg_fname_for_segment_search, i);
 	  worker.juncs = &vseg_juncs[i];
 	  worker.deletions = &vdeletions[i];
 	  worker.insertions = &vinsertions[i];
@@ -4831,24 +4836,11 @@ void driver(istream& ref_stream,
 	  worker.partner_hit_offset = 0;
 	  worker.seg_partner_hit_offset = 0;
 
-	  if (i == 0)
-	    {
 	      worker.begin_id = 0;
 	      worker.seg_offsets = vector<int64_t>(right_segmap_fnames.size(), 0);
 	      worker.read_offset = 0;
-	    }
-	  else
-	    {
-	      worker.begin_id = read_ids[i-1];
-	      worker.seg_offsets.insert(worker.seg_offsets.end(), offsets[i-1].begin() + 1, offsets[i-1].end());
-	      worker.read_offset = offsets[i-1][0];
-	      if (partner_offsets.size() > 0)
-		worker.partner_hit_offset = partner_offsets[i-1];
-	      if (seg_partner_offsets.size() > 0)
-		worker.seg_partner_hit_offset = seg_partner_offsets[i-1];
-	    }
-
-	  worker.end_id = (i+1 < num_threads) ? read_ids[i] : std::numeric_limits<uint64_t>::max();
+	      
+	  worker.end_id = std::numeric_limits<uint64_t>::max();
 
 	  if (num_threads > 1 && i + 1 < num_threads)
 	    threads.push_back(new boost::thread(worker));
