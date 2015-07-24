@@ -188,6 +188,8 @@ std::string getUnpackCmd(const std::string& fname, bool use_all_cpus=false);
 void checkSamHeader();
 void writeSamHeader(FILE* fout);
 
+void print_time();
+
 class FZPipe {
  public:
 	 union {

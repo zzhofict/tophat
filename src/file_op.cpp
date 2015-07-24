@@ -1,6 +1,9 @@
 #include <sstream>
 #include "file_op.h"
-//#include "common.h"
+#include "common.h"
+#include <iostream>
+
+using namespace std;
 
 //typedef streamsize SS;
 const static SS READ_BUFLEN = 4*1024*1024;
@@ -70,6 +73,7 @@ void getFileQueryPos(const string fstr,
                      int nThreads,
                      SS skip, //skip the first lines
                      SS qLine) {// lines for one query
+    
     SS fileSize = getFileSize(fstr);
 
     vector<ThreadArgFile> args(nThreads);
@@ -80,9 +84,12 @@ void getFileQueryPos(const string fstr,
         args[i].start = ITEM_BEGIN(i, nThreads, fileSize);
         args[i].end = ITEM_END(i, nThreads, fileSize);
         args[i].vpos = &vposes[i];
-        pthread_create(&args[i].tid, NULL, threadGetLinePos, &args[i]);
+        if( i+1 < nThreads)
+            pthread_create(&args[i].tid, NULL, threadGetLinePos, &args[i]);
+        else
+            threadGetLinePos(&args[i]);
     }
-    for(int i=0; i<nThreads; ++i)
+    for(int i=0; i<nThreads-1; ++i)
         pthread_join(args[i].tid, NULL);
 
     if(skip == 0) vpos.push_back(0);
@@ -95,7 +102,6 @@ void getFileQueryPos(const string fstr,
                 vpos.push_back(v[i]);
         }   
     }
-
 }
 
 /*
@@ -116,6 +122,7 @@ void getFilePartByThreads(string fname,
                           vector<pair<long, long> > &vpos, 
                           int numPart,
                           const char schr) {
+
 
     SS fileSize = getFileSize(fname);
     ifstream ifs(fname.c_str(), ios::in|ios::binary);

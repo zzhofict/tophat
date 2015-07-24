@@ -597,8 +597,9 @@ void process_reads(vector<string>& reads_fnames, vector<FZPipe>& quals_files,
         getFileQueryPos(mate_fnames[i], mate_pos[i], num_threads);
     }
 
-    cout << "after get pos" << endl;
 
+    cout << "start prep" << endl;
+    print_time();
     for(int i=0; i<num_threads; i++) {
 
         string tstr = "_"; str_appendInt(tstr, i);
@@ -615,15 +616,21 @@ void process_reads(vector<string>& reads_fnames, vector<FZPipe>& quals_files,
         targs[i].PE_data = PE_data;
 
         for(size_t j=0; j<reads_fnames.size(); j++) {
-            long start = ITEM_BEGIN(i, num_threads, reads_pos[j].size()-1);
-            long end = ITEM_END(i, num_threads, reads_pos[j].size()-1);
+            size_t range = min(reads_pos[j].size(), mate_pos[j].size()) -1;
+            size_t start = ITEM_BEGIN(i, num_threads, range);
+            size_t end = ITEM_END(i, num_threads, range);
             targs[i].reads_range[j].first = reads_pos[j][start];
             targs[i].reads_range[j].second = reads_pos[j][end];
             targs[i].mate_range[j].first = mate_pos[j][start];
             targs[i].mate_range[j].second = mate_pos[j][end];
             targs[i].next_id[j] = start;
+            if(i == num_threads-1) {
+                if(end < reads_pos[j].size()-1) 
+                    targs[i].reads_range[j].second = reads_pos[j].back();
+                if(end < mate_pos[j].size()-1) 
+                    targs[i].mate_range[j].second = mate_pos[j].back();
+            }
          }
-
 
         if (std_outfile.empty()) {
             targs[i].fout=stdout;
@@ -754,6 +761,8 @@ void process_reads(vector<string>& reads_fnames, vector<FZPipe>& quals_files,
         if (targs[i].fqindex) fclose(targs[i].fqindex);
         if (targs[i].mate_fqindex) fclose(targs[i].mate_fqindex);
     }
+    cout << "end prep" << endl;
+    print_time();
 }
 
 void print_usage()

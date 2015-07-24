@@ -20,6 +20,7 @@
 #include <unistd.h>
 #include <ios>
 #include <fstream>
+#include <ctime>
 
 using namespace std;
 
@@ -1336,3 +1337,10 @@ GBamRecord::GBamRecord(const char* qname, int32_t flags, int32_t g_tid,
  return seq;
  }
 
+void print_time() {
+    time_t raw_time;
+    struct tm *time_info;
+    time(&raw_time);
+    time_info = localtime(&raw_time);
+    printf("[Time]: %s\n", asctime(time_info));
+}

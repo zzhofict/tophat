@@ -3379,13 +3379,21 @@ def map2gtf(params, genome_sam_header_filename, ref_fasta, left_reads, right_rea
     t_out_dir = tmp_dir
     if currentStage < resumeStage or (params.transcriptome_index and not params.transcriptome_outdir):
        m2g_bwt_idx = params.transcriptome_index
+       if not m2g_bwt_idx:
+         if params.transcriptome_outdir:
+            t_out_dir=params.transcriptome_outdir+"/"
+         m2g_ref_name  = t_out_dir + gtf_name
+         m2g_ref_fasta = m2g_ref_name + ".fa"
+         m2g_bwt_idx = t_out_dir + os.path.basename(m2g_ref_fasta).replace(".fa", "")
        th_log("Using pre-built transcriptome data..")
     else:
        if params.transcriptome_outdir:
          t_out_dir=params.transcriptome_outdir+"/"
        th_log("Building transcriptome data files "+t_out_dir+gtf_name)
        m2g_ref_name  = t_out_dir + gtf_name
+#       m2g_ref_fasta = m2g_ref_name + ".fa" #zzh
        m2g_ref_fasta = gtf_to_fasta(params, params.gff_annotation, ref_fasta, m2g_ref_name)
+#       m2g_bwt_idx = t_out_dir + os.path.basename(m2g_ref_fasta).replace(".fa", "") #zzh
        m2g_bwt_idx = build_idx_from_fa(params.bowtie2, m2g_ref_fasta, t_out_dir, params.read_params.color)
        params.transcriptome_index = m2g_bwt_idx
     if params.transcriptome_buildonly:
@@ -3395,9 +3403,13 @@ def map2gtf(params, genome_sam_header_filename, ref_fasta, left_reads, right_rea
     mapped_gtf_list = []
     unmapped_gtf_list = []    
     # do the initial mapping in GTF coordinates
+    params = cp.deepcopy(params)
+    bowtie_proc_queue = [Queue() for i in range(2)]
+    bowtie_proc_handle = [None for i in range(2)]
+    i = 0
     for reads in [left_reads, right_reads]:
-        if reads == None or os.path.getsize(reads) < 25 :
-            continue
+#        if reads == None or os.path.getsize(reads) < 25 :
+#            continue
         fbasename = getFileBaseName(reads)
         mapped_gtf_out = tmp_dir + fbasename + ".m2g"
         #if use_zpacker:
@@ -3406,8 +3418,9 @@ def map2gtf(params, genome_sam_header_filename, ref_fasta, left_reads, right_rea
         unmapped_gtf = tmp_dir + fbasename + ".m2g_um"
         #if use_BWT_FIFO:
         #    unmapped_gtf += ".z"
-
-        (mapped_gtf_map, unmapped) = bowtie(params,
+        bowtie_proc_handle[i] = Process(target = bowtie_process_wrap,
+                                        args = (bowtie_proc_queue[i],
+                                            params,
                                             m2g_bwt_idx,
                                             [transcriptome_header_filename, genome_sam_header_filename],
                                             [reads],
@@ -3417,9 +3430,14 @@ def map2gtf(params, genome_sam_header_filename, ref_fasta, left_reads, right_rea
                                             params.read_realign_edit_dist,
                                             mapped_gtf_out,
                                             unmapped_gtf,
-                                            "", _reads_vs_T)
-        mapped_gtf_list.append(mapped_gtf_map)
-        unmapped_gtf_list.append(unmapped)
+                                            "", _reads_vs_T))
+        bowtie_proc_handle[i].start()
+        i = i+1
+    for ri in range(2):
+        if(bowtie_proc_handle[ri]):
+            bowtie_proc_handle[ri].join()
+            mapped_gtf_list.append(bowtie_proc_queue[ri].get())
+            unmapped_gtf_list.append(bowtie_proc_queue[ri].get())
 
     if len(mapped_gtf_list) < 2:
         mapped_gtf_list.append(None)
@@ -3614,6 +3632,20 @@ def bowtie_process_wrap(queue,
     queue.put(unmapped_reads_out)
 # end of bowtie_process_wrap
 
+
+def split_reads_wrap(queue,
+                reads_filename,
+                prefix,
+                fasta,
+                params,
+                segment_length):
+    queue.put(split_reads(reads_filename,
+                        prefix,
+                        fasta,
+                        params,
+                        segment_length))
+
+
 # reads segment bowtie process
 def bowtie_seg_process_wrap(queue,
                         num_segs,
@@ -3652,18 +3684,28 @@ def bowtie_seg_process_wrap(queue,
     seg_maps = [[] for i in range(old_num_threads)]
     unmapped_segs = [[] for i in range(old_num_threads)]
     segs = [[] for i in range(old_num_threads)]
-    maps = []
+    maps = [None]
     read_segments = [None] * old_num_threads
     if num_segs > 1 and have_IUM:
         # split up the IUM reads into segments
         # unmapped_reads can be in BAM format
+        split_reads_proc = [None] * old_num_threads
+        split_reads_que = [Queue() for i in range(old_num_threads)]
         for thi in range(0, old_num_threads):  
             fbasename = add_part_number(old_fbasename, thi) 
-            read_segments[thi] = split_reads(unmapped_reads[thi],
-                                    tmp_dir + fbasename,
-                                    False,
-                                    params,
-                                    segment_len)
+            split_reads_proc[thi] = Process(target=split_reads_wrap,
+                                            args = (split_reads_que[thi],
+                                                unmapped_reads[thi],
+                                                tmp_dir + fbasename,
+                                                False,
+                                                params,
+                                                segment_len))
+            split_reads_proc[thi].start()
+
+        for thi in range(0, old_num_threads):  
+            if(split_reads_proc[thi]):
+                split_reads_proc[thi].join()
+                read_segments[thi] = split_reads_que[thi].get()
 
         # Map each segment file independently with Bowtie
         for i in range(len(read_segments[0])):
@@ -3674,6 +3716,8 @@ def bowtie_seg_process_wrap(queue,
                 for parti in range(bowtie_part_num):
                     que[parti] = Queue()
                     thi = bthi*bowtie_part_num + parti
+                    if not read_segments[thi] or not read_segments[thi][i]:
+                        break
                     seg = read_segments[thi][i]
                     segs[thi].append(seg)
                     fbasename=getFileBaseName(seg)
@@ -3699,6 +3743,8 @@ def bowtie_seg_process_wrap(queue,
 
                 for parti in range (bowtie_part_num):
                     thi = bthi*bowtie_part_num + parti
+                    if not read_segments[thi] or not read_segments[thi][i]:
+                        break
                     proc[parti].join()
                     seg_map = que[parti].get()
                     unmapped = que[parti].get()
@@ -3713,10 +3759,97 @@ def bowtie_seg_process_wrap(queue,
         read_segments = [reads]
         maps = Maps(unspliced_sam, [unspliced_sam], [unmapped_reads], [unmapped_reads])
 
-
     queue.put(maps)
 
 #end of segment bowtie process
+
+def map2juncs_wrap(queue,
+                   params,
+                   junc_idx_prefix,
+                   juncs_bwt_samheader,
+                   segs,
+                   sam_header_filename,
+                   reads,
+                   ref_fasta,
+                   possible_juncs,
+                   possible_insertions,
+                   possible_deletions,
+                   possible_fusions,
+                   seg_maps,
+                   mapped_reads):
+
+    params = cp.deepcopy(params)
+    old_num_threads = params.system_params.num_threads
+    spliced_seg_maps = [[] for i in range(old_num_threads)]
+    bowtie_part_num = 4
+    bowtie_num_threads = old_num_threads / bowtie_part_num
+    if bowtie_num_threads < 1:
+        bowtie_num_threads = 1
+        bowtie_part_num = old_num_threads
+    params.system_params.num_threads = bowtie_num_threads + 2
+
+    for i in range(len(segs[0])):
+        #search each segment
+
+        for bthi in range(bowtie_num_threads):
+            que = [None] * bowtie_part_num
+            proc = [None] * bowtie_part_num
+
+            for parti in range(bowtie_part_num):
+                que[parti] = Queue()
+                thi = bthi*bowtie_part_num + parti
+                seg = segs[thi][i]
+                fsegname = getFileBaseName(seg)
+                seg_out = tmp_dir + fsegname + ".to_spliced"
+                extra_output = "(%d/%d)" % (i+1, len(segs[thi]))
+
+                proc[parti] = Process(target=bowtie_wrap,
+                                    args = (que[parti],
+                                        params,
+                                        junc_idx_prefix,
+                                        juncs_bwt_samheader,
+                                        [seg],
+                                        # reads_format,
+                                        params.segment_mismatches,
+                                        params.segment_mismatches,
+                                        params.segment_mismatches,
+                                        params.segment_mismatches,
+                                        seg_out,
+                                        None,
+                                        extra_output,
+                                        _segs_vs_J))
+                proc[parti].start()
+
+            for parti in range (bowtie_part_num):
+                thi = bthi*bowtie_part_num + parti
+                proc[parti].join()
+                seg_map = que[parti].get()
+                unmapped = que[parti].get()
+                spliced_seg_maps[thi].append(seg_map)
+
+    # Join the contigous and spliced segment hits into full length
+    #   read alignments
+    # -- spliced mappings built from all segment mappings vs genome and junc_db
+    params.system_params.num_threads = old_num_threads
+    join_mapped_segments(params,
+                         sam_header_filename,
+                         add_part_number(reads, 0),
+                         ref_fasta,
+                         possible_juncs,
+                         possible_insertions,
+                         possible_deletions,
+                         possible_fusions,
+                         seg_maps[0],
+                         spliced_seg_maps[0],
+                         add_part_number(mapped_reads, 0))
+    #if not params.system_params.keep_tmp:
+    #    for seg_map in maps[ri].seg_maps:
+    #        removeFileWithIndex(seg_map)
+    #    for spliced_seg_map in spliced_seg_maps:
+    #        removeFileWithIndex(spliced_seg_map)
+
+
+
 
 # The main aligment routine of TopHat.  This function executes most of the
 # workflow producing a set of candidate alignments for each cDNA fragment in a
@@ -3757,17 +3890,20 @@ def spliced_alignment(params,
             map2gtf(params, sam_header_filename, ref_fasta, left_reads, right_reads)
 
         m2g_left_maps, m2g_right_maps = mapped_gtf_list
-        m2g_maps = [m2g_left_maps, m2g_right_maps]
-        if params.transcriptome_only or not fileExists(unmapped_gtf_list[0]):
+        m2g_maps = [m2g_left_maps[0], m2g_right_maps[0]]
+        if params.transcriptome_only or not fileExists(unmapped_gtf_list[0][0]):
             # The case where the user doesn't want to map to anything other
             # than the transcriptome OR we have no unmapped reads
-            maps[0] = [m2g_left_maps]
+            maps[0] = [m2g_left_maps[0]]
             if right_reads:
-                maps[1] = [m2g_right_maps]
+                maps[1] = [m2g_right_maps[0]]
 
             return maps
         # Feed the unmapped reads into spliced_alignment()
-        initial_reads = unmapped_gtf_list[:]
+        if unmapped_gtf_list[1]:
+            initial_reads = [unmapped_gtf_list[0][0], unmapped_gtf_list[1][0]]
+        else:
+            initial_reads = [unmapped_gtf_list[0][0], None]
         if currentStage >= resumeStage:
            th_log("Resuming TopHat pipeline with unmapped reads")
 
@@ -3778,6 +3914,9 @@ def spliced_alignment(params,
                 return [[m2g_maps[0]], [m2g_maps[1]]]
             else:
                 return [[m2g_maps[0]], []]
+        initial_reads[0] = del_part_number(initial_reads[0], 0)
+        if(initial_reads[1]):
+            initial_reads[1] = del_part_number(initial_reads[1], 0)
 
     max_seg_len = segment_len #this is the ref seq span on either side of the junctions
                               #to be extracted into segment_juncs.fa
@@ -4016,14 +4155,14 @@ def spliced_alignment(params,
     # index with Bowtie
     setRunStage(_stage_map2juncs)
 
+    map2juncs_proc_handle = [None for i in range(2)]
+    map2juncs_proc_que = [Queue() for i in range(2)]
     for ri in (0,1):
         reads = initial_reads[ri]
         if not reads: continue
-        spliced_seg_maps = [[] for i in range(old_num_threads)]
         rfname=getFileBaseName(reads)
         rfdir=getFileDir(reads)
 
-        m2g_map = m2g_maps[ri]
         mapped_reads = rfdir + rfname + ".candidates.bam"
         merged_map = rfdir + rfname + ".candidates_and_unspl.bam"
 
@@ -4038,77 +4177,43 @@ def spliced_alignment(params,
 
         if have_IUM:
             if junc_idx_prefix:
-                bowtie_part_num = 4
-                bowtie_num_threads = old_num_threads / bowtie_part_num
-                if bowtie_num_threads < 1:
-                    bowtie_num_threads = 1
-                    bowtie_part_num = old_num_threads
-                params.system_params.num_threads = bowtie_num_threads + 2
+               map2juncs_proc_handle[ri] = Process(target = map2juncs_wrap,
+                                                args = (map2juncs_proc_que[ri],
+                                                     params,
+                                                     tmp_dir + junc_idx_prefix,
+                                                     juncs_bwt_samheader,
+                                                     maps[ri].segs,
+                                                     sam_header_filename,
+                                                     reads,
+                                                     ref_fasta,
+                                                     possible_juncs,
+                                                     possible_insertions,
+                                                     possible_deletions,
+                                                     possible_fusions,
+                                                     maps[ri].seg_maps,
+                                                     mapped_reads))
+               map2juncs_proc_handle[ri].start()
 
-                for i in range(len(maps[ri].segs[0])):
-                    #search each segment
+    for ri in (0, 1):
+        if(map2juncs_proc_handle[ri]):
+            map2juncs_proc_handle[ri].join()
 
-                    for bthi in range(bowtie_num_threads):
-                        que = [None] * bowtie_part_num
-                        proc = [None] * bowtie_part_num
-            
-                        for parti in range(bowtie_part_num):
-                            que[parti] = Queue()
-                            thi = bthi*bowtie_part_num + parti
-                            seg = maps[ri].segs[thi][i]
-                            fsegname = getFileBaseName(seg)
-                            seg_out = tmp_dir + fsegname + ".to_spliced"
-                            extra_output = "(%d/%d)" % (i+1, len(maps[ri].segs[thi]))
+        reads = initial_reads[ri]
+        if not reads: continue
+        rfname=getFileBaseName(reads)
+        rfdir=getFileDir(reads)
 
-                            proc[parti] = Process(target=bowtie_wrap,
-                                                args = (que[parti],
-                                                    params,
-                                                    tmp_dir + junc_idx_prefix,
-                                                    juncs_bwt_samheader,
-                                                    [seg],
-                                                    # reads_format,
-                                                    params.segment_mismatches,
-                                                    params.segment_mismatches,
-                                                    params.segment_mismatches,
-                                                    params.segment_mismatches,
-                                                    seg_out,
-                                                    None,
-                                                    extra_output,
-                                                    _segs_vs_J))
-                            proc[parti].start()
-            
-                        for parti in range (bowtie_part_num):
-                            thi = bthi*bowtie_part_num + parti
-                            proc[parti].join()
-                            seg_map = que[parti].get()
-                            unmapped = que[parti].get()
-                            spliced_seg_maps[thi].append(seg_map)
-            
-                # Join the contigous and spliced segment hits into full length
-                #   read alignments
-                # -- spliced mappings built from all segment mappings vs genome and junc_db
-                params.system_params.num_threads = old_num_threads
-                join_mapped_segments(params,
-                                     sam_header_filename,
-                                     add_part_number(reads, 0),
-                                     ref_fasta,
-                                     possible_juncs,
-                                     possible_insertions,
-                                     possible_deletions,
-                                     possible_fusions,
-                                     maps[ri].seg_maps[0],
-                                     spliced_seg_maps[0],
-                                     add_part_number(mapped_reads, 0))
-                #if not params.system_params.keep_tmp:
-                #    for seg_map in maps[ri].seg_maps:
-                #        removeFileWithIndex(seg_map)
-                #    for spliced_seg_map in spliced_seg_maps:
-                #        removeFileWithIndex(spliced_seg_map)
+        mapped_reads = rfdir + rfname + ".candidates.bam"
+        merged_map = rfdir + rfname + ".candidates_and_unspl.bam"
 
+        if maps[ri]:
+            unspl_samfile = maps[ri].unspliced_sam
+        else:
+            unspl_samfile = None
         maps[ri] = []
-        if m2g_map and \
-               nonzeroFile(m2g_map):
-            maps[ri].append(m2g_map)
+        if m2g_maps[ri] and \
+               nonzeroFile(m2g_maps[ri]):
+            maps[ri].append(m2g_maps[ri])
 
         if unspl_samfile[0] and \
                nonzeroFile(unspl_samfile[0]):
